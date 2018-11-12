@@ -285,6 +285,11 @@ func (b *ZdbBackend) Close() {
 	b.Server.Close()
 }
 
+func Cleanup(backend *ZdbBackend) {
+	log.Println("Closing backend")
+	backend.Close()
+}
+
 var addrflag = flag.String("addr", ":16379", "listening address")
 var backendflag = flag.String("backend", "127.0.0.1:9900", "zdb backend host/port")
 
@@ -299,8 +304,7 @@ func main() {
 	signal.Notify(c, syscall.SIGINT)
 
 	defer func() {
-		log.Println("Closing connections")
-		backend.Close()
+		Cleanup(backend)
 		os.Exit(0)
 	}()
 
@@ -313,8 +317,7 @@ func main() {
 
 	go func() {
 		<-c
-		log.Println("closing kvs")
-		backend.Close()
+		Cleanup(backend)
 		os.Exit(0)
 	}()
 
