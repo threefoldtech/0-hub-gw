@@ -55,9 +55,8 @@ func cryptoInit() {
 	}
 }
 
-//
-// list of sessions
-//
+// NewSessions create a new object containing
+// list of sessions which can be mapped to connections
 func NewSessions(backend *ZdbBackend) *Sessions {
 	return &Sessions{
 		List:    make(map[*resp.Conn]*Session),
@@ -65,7 +64,9 @@ func NewSessions(backend *ZdbBackend) *Sessions {
 	}
 }
 
-// single session
+// NewSession create a single session object
+// used to keep track of a user connection session
+// (basically if the user is connected and it's username)
 func (ss *Sessions) NewSession() *Session {
 	return &Session{
 		Authenticated: false,
@@ -74,14 +75,16 @@ func (ss *Sessions) NewSession() *Session {
 	}
 }
 
-// create a new Session based on a new connection
+// SessionAccept allocate a new object to map it with the connection
+// associated with the client
 func (ss *Sessions) SessionAccept(conn *resp.Conn) bool {
 	log.Printf("Creating a new session for [%v]\n", conn.RemoteAddr)
 	ss.List[conn] = ss.NewSession()
 	return true
 }
 
-// verify a jwt token is valid
+// verifyToken ensure the jwt token received comes from ItsYouOnline
+// and is still valid
 func verifyToken(tokenStr string) (bool, string, error) {
 	token, err := jwt.Parse(tokenStr, func(token *jwt.Token) (interface{}, error) {
 		if token.Method != jwt.SigningMethodES384 {
@@ -105,10 +108,15 @@ func verifyToken(tokenStr string) (bool, string, error) {
 //
 // AUTH
 //
+// Authenticate handle AUTH redis command
+// this takes the jwt token as single argument
 func (ss *Sessions) Authenticate(conn *resp.Conn, args []resp.Value) bool {
-	// retreive session from connection
-	session := ss.List[conn]
-	return session.Authenticate(conn, args)
+	if session, ok := ss.List[conn]; ok {
+		return session.Authenticate(conn, args)
+	}
+
+	// connection not found, closing
+	return false
 }
 
 func (s *Session) Authenticate(conn *resp.Conn, args []resp.Value) bool {
@@ -136,6 +144,10 @@ func (s *Session) Authenticate(conn *resp.Conn, args []resp.Value) bool {
 //
 // INFO
 //
+// Info is used to retreive information about the server, we don't
+// forward the raw response from 0-db, we fake the reply, but still
+// match "0-db" on the reply, some project (like 0-flist) rely on
+// thet to choose the API to use
 func (ss *Sessions) Info(conn *resp.Conn, args []resp.Value) bool {
 	conn.WriteString("Gateway for 0-db (zdb) compatible clients\n")
 	return true
@@ -144,10 +156,15 @@ func (ss *Sessions) Info(conn *resp.Conn, args []resp.Value) bool {
 //
 // EXISTS
 //
+// Exists forward the EXISTS command to 0-db, returns 1 or 0 as integer
+// if the given key exists or not
 func (ss *Sessions) Exists(conn *resp.Conn, args []resp.Value) bool {
-	// retreive session from connection
-	session := ss.List[conn]
-	return session.Exists(conn, args)
+	if session, ok := ss.List[conn]; ok {
+		return session.Exists(conn, args)
+	}
+
+	// connection not found, closing
+	return false
 }
 
 func (s *Session) Exists(conn *resp.Conn, args []resp.Value) bool {
@@ -178,13 +195,24 @@ func (s *Session) Exists(conn *resp.Conn, args []resp.Value) bool {
 //
 // SET
 //
+// Set does a simple forward to 0-db, but in addition, it ensure
+// the payload and the key are well related (the key should be
+// the hash of the payload, that's what's intended to be in the
+// database of the hub), if the check doesn't match, the Set is
+// dropped
 func (ss *Sessions) Set(conn *resp.Conn, args []resp.Value) bool {
 	// retreive session from connection
-	session := ss.List[conn]
-	return session.Set(conn, args)
+	if session, ok := ss.List[conn]; ok {
+		return session.Set(conn, args)
+	}
+
+	// connection not found, closing
+	return false
 }
 
-func (s *Session) DataValidator(key []byte, payload []byte) bool {
+// DataValidator computes the blake2 hash of the payload
+// and check if the key provided is the same
+func DataValidator(key []byte, payload []byte) bool {
 	h := blake2.New(&blake2.Config{Size: 16})
 	h.Write(payload)
 	d := h.Sum(nil)
@@ -204,7 +232,7 @@ func (s *Session) Set(conn *resp.Conn, args []resp.Value) bool {
 		return true
 	}
 
-	if !s.DataValidator(args[1].Bytes(), args[2].Bytes()) {
+	if !DataValidator(args[1].Bytes(), args[2].Bytes()) {
 		log.Printf("Validator failed, payload hash doesn't match key\n")
 		conn.WriteError(errors.New("Unauthorized payload"))
 		return true
@@ -240,6 +268,8 @@ func (s *Session) Set(conn *resp.Conn, args []resp.Value) bool {
 //
 // backend
 //
+// NewBackend creates a backend object, which is a
+// connection to 0-db
 func NewBackend(server string) *ZdbBackend {
 	c, err := redis.Dial("tcp", server)
 	if err != nil {
