@@ -154,6 +154,16 @@ func (ss *Sessions) Info(conn *resp.Conn, args []resp.Value) bool {
 }
 
 //
+// SELECT
+//
+// Select fakes the namespace selection, by always returning OK
+// but in reality nothing is done
+func (ss *Sessions) Select(conn *resp.Conn, args []resp.Value) bool {
+	conn.WriteSimpleString("OK")
+	return true
+}
+
+//
 // EXISTS
 //
 // Exists forward the EXISTS command to 0-db, returns 1 or 0 as integer
@@ -314,6 +324,7 @@ func main() {
 	r.HandleFunc("exists", ss.Exists)
 	r.HandleFunc("set", ss.Set)
 	r.HandleFunc("info", ss.Info)
+	r.HandleFunc("select", ss.Select)
 
 	go func() {
 		<-c
