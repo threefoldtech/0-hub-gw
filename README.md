@@ -28,4 +28,3 @@ Wrapper used to avoid command error, this does nothing
 
 # Repository Owner
 - [Maxime Daniel](https://github.com/maxux), Telegram: [@maxux](http://t.me/maxux)
-
