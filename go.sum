@@ -1,0 +1,8 @@
+github.com/codahale/blake2 v0.0.0-20150924215134-8d10d0420cbf h1:5ZeQB3mThuz5C2MSER6T5GdtXTF9CMMk42F9BOyRsEQ=
+github.com/codahale/blake2 v0.0.0-20150924215134-8d10d0420cbf/go.mod h1:BO2rLUAZMrpgh6GBVKi0Gjdqw2MgCtJrtmUdDeZRKjY=
+github.com/dgrijalva/jwt-go v3.2.0+incompatible h1:7qlOGliEKZXTDg6OTjfoBKDXWrumCAMpl/TFQ4/5kLM=
+github.com/dgrijalva/jwt-go v3.2.0+incompatible/go.mod h1:E3ru+11k8xSBh+hMPgOLZmtrrCbhqsmaPHjLKYnJCaQ=
+github.com/gomodule/redigo v1.7.0 h1:ZKld1VOtsGhAe37E7wMxEDgAlGM5dvFY+DiOhSkhP9Y=
+github.com/gomodule/redigo v1.7.0/go.mod h1:B4C85qUVwatsJoIUNIfCRsp7qO0iAmpGFZ4EELWSbC4=
+github.com/tidwall/resp v0.0.0-20160908231031-b2b1a7ca20e3 h1:+weN0RLHfv5fugOSyHPxbY9feCqi6JnLBFsq8Jvx7/E=
+github.com/tidwall/resp v0.0.0-20160908231031-b2b1a7ca20e3/go.mod h1:18xEj855iMY2bK6tNF2A4x+nZy5gWO1iO7OOl3jETKw=

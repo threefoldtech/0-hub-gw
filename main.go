@@ -6,11 +6,14 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"crypto/ecdsa"
+
 	"github.com/dgrijalva/jwt-go"
 
 	"github.com/codahale/blake2"
@@ -21,18 +24,18 @@ import (
 var jwtPubKey *ecdsa.PublicKey
 
 type ZdbBackend struct {
-	Server redis.Conn
+	pool *redis.Pool
 }
 
 type Session struct {
-	Authenticated bool
-	Username      string
-	Backend       *ZdbBackend
+	authenticated bool
+	username      string
+	backend       *ZdbBackend
 }
 
 type Sessions struct {
-	List    map[*resp.Conn]*Session
-	Backend *ZdbBackend
+	list    map[*resp.Conn]*Session
+	backend *ZdbBackend
 }
 
 //
@@ -59,8 +62,8 @@ func cryptoInit() {
 // list of sessions which can be mapped to connections
 func NewSessions(backend *ZdbBackend) *Sessions {
 	return &Sessions{
-		List:    make(map[*resp.Conn]*Session),
-		Backend: backend,
+		list:    make(map[*resp.Conn]*Session),
+		backend: backend,
 	}
 }
 
@@ -69,9 +72,9 @@ func NewSessions(backend *ZdbBackend) *Sessions {
 // (basically if the user is connected and it's username)
 func (ss *Sessions) NewSession() *Session {
 	return &Session{
-		Authenticated: false,
-		Username:      "",
-		Backend:       ss.Backend,
+		authenticated: false,
+		username:      "",
+		backend:       ss.backend,
 	}
 }
 
@@ -79,7 +82,7 @@ func (ss *Sessions) NewSession() *Session {
 // associated with the client
 func (ss *Sessions) SessionAccept(conn *resp.Conn) bool {
 	log.Printf("Creating a new session for [%v]\n", conn.RemoteAddr)
-	ss.List[conn] = ss.NewSession()
+	ss.list[conn] = ss.NewSession()
 	return true
 }
 
@@ -108,10 +111,11 @@ func verifyToken(tokenStr string) (bool, string, error) {
 //
 // AUTH
 //
+
 // Authenticate handle AUTH redis command
 // this takes the jwt token as single argument
 func (ss *Sessions) Authenticate(conn *resp.Conn, args []resp.Value) bool {
-	if session, ok := ss.List[conn]; ok {
+	if session, ok := ss.list[conn]; ok {
 		return session.Authenticate(conn, args)
 	}
 
@@ -130,24 +134,25 @@ func (s *Session) Authenticate(conn *resp.Conn, args []resp.Value) bool {
 		log.Printf("Authentication failed: %v\n", err)
 		conn.WriteError(errors.New("Access denied"))
 
-		s.Authenticated = false
+		s.authenticated = false
 		return true
 	}
 
-	s.Username = username
-	s.Authenticated = true
+	s.username = username
+	s.authenticated = true
 
-	conn.WriteSimpleString("OK - " + s.Username)
+	conn.WriteSimpleString("OK - " + s.username)
 	return true
 }
 
 //
 // INFO
 //
+
 // Info is used to retreive information about the server, we don't
 // forward the raw response from 0-db, we fake the reply, but still
 // match "0-db" on the reply, some project (like 0-flist) rely on
-// thet to choose the API to use
+// this to choose the API to use
 func (ss *Sessions) Info(conn *resp.Conn, args []resp.Value) bool {
 	conn.WriteString("Gateway for 0-db (zdb) compatible clients\n")
 	return true
@@ -156,6 +161,7 @@ func (ss *Sessions) Info(conn *resp.Conn, args []resp.Value) bool {
 //
 // SELECT
 //
+
 // Select fakes the namespace selection, by always returning OK
 // but in reality nothing is done
 func (ss *Sessions) Select(conn *resp.Conn, args []resp.Value) bool {
@@ -166,10 +172,11 @@ func (ss *Sessions) Select(conn *resp.Conn, args []resp.Value) bool {
 //
 // EXISTS
 //
+
 // Exists forward the EXISTS command to 0-db, returns 1 or 0 as integer
 // if the given key exists or not
 func (ss *Sessions) Exists(conn *resp.Conn, args []resp.Value) bool {
-	if session, ok := ss.List[conn]; ok {
+	if session, ok := ss.list[conn]; ok {
 		return session.Exists(conn, args)
 	}
 
@@ -178,7 +185,7 @@ func (ss *Sessions) Exists(conn *resp.Conn, args []resp.Value) bool {
 }
 
 func (s *Session) Exists(conn *resp.Conn, args []resp.Value) bool {
-	if !s.Authenticated {
+	if !s.authenticated {
 		log.Printf("Command EXISTS for unauthenticated user [%v]\n", conn.RemoteAddr)
 		conn.WriteError(errors.New("Permission denied"))
 		return true
@@ -189,7 +196,10 @@ func (s *Session) Exists(conn *resp.Conn, args []resp.Value) bool {
 		return true
 	}
 
-	reply, err := s.Backend.Server.Do("EXISTS", args[1])
+	bc := s.backend.pool.Get()
+	defer bc.Close()
+
+	reply, err := bc.Do("EXISTS", args[1])
 	if err != nil {
 		log.Printf("Exists failed: %v\n", err)
 		conn.WriteError(errors.New("Cannot perform query right now"))
@@ -205,6 +215,7 @@ func (s *Session) Exists(conn *resp.Conn, args []resp.Value) bool {
 //
 // SET
 //
+
 // Set does a simple forward to 0-db, but in addition, it ensure
 // the payload and the key are well related (the key should be
 // the hash of the payload, that's what's intended to be in the
@@ -212,7 +223,7 @@ func (s *Session) Exists(conn *resp.Conn, args []resp.Value) bool {
 // dropped
 func (ss *Sessions) Set(conn *resp.Conn, args []resp.Value) bool {
 	// retreive session from connection
-	if session, ok := ss.List[conn]; ok {
+	if session, ok := ss.list[conn]; ok {
 		return session.Set(conn, args)
 	}
 
@@ -231,7 +242,7 @@ func DataValidator(key []byte, payload []byte) bool {
 }
 
 func (s *Session) Set(conn *resp.Conn, args []resp.Value) bool {
-	if !s.Authenticated {
+	if !s.authenticated {
 		log.Printf("Command SET for unauthenticated user [%v]\n", conn.RemoteAddr)
 		conn.WriteError(errors.New("Permission denied"))
 		return true
@@ -248,7 +259,10 @@ func (s *Session) Set(conn *resp.Conn, args []resp.Value) bool {
 		return true
 	}
 
-	reply, err := s.Backend.Server.Do("SET", args[1], args[2])
+	bc := s.backend.pool.Get()
+	defer bc.Close()
+
+	reply, err := bc.Do("SET", args[1], args[2])
 	if err != nil {
 		log.Printf("SET failed: %v\n", err)
 		conn.WriteError(errors.New("Cannot perform query right now"))
@@ -278,21 +292,69 @@ func (s *Session) Set(conn *resp.Conn, args []resp.Value) bool {
 //
 // backend
 //
+
 // NewBackend creates a backend object, which is a
 // connection to 0-db
-func NewBackend(server string) *ZdbBackend {
-	c, err := redis.Dial("tcp", server)
+func NewBackend(server string) (*ZdbBackend, error) {
+
+	pool, err := newRedisPool(server)
 	if err != nil {
-		log.Fatal(err)
+		return nil, fmt.Errorf("failed to connect to %s", server)
 	}
 
 	return &ZdbBackend{
-		Server: c,
+		pool: pool,
+	}, nil
+}
+
+func newRedisPool(address string) (*redis.Pool, error) {
+	u, err := url.Parse(address)
+	if err != nil {
+		return nil, err
 	}
+	var host string
+	switch u.Scheme {
+	case "tcp":
+		host = u.Host
+	case "unix":
+		host = u.Path
+	default:
+		return nil, fmt.Errorf("unknown scheme '%s' expecting tcp or unix", u.Scheme)
+	}
+	var opts []redis.DialOption
+
+	if u.User != nil {
+		opts = append(
+			opts,
+			redis.DialPassword(u.User.Username()),
+		)
+	}
+
+	return &redis.Pool{
+		Dial: func() (redis.Conn, error) {
+			return redis.Dial(u.Scheme, host, opts...)
+		},
+		TestOnBorrow: func(c redis.Conn, t time.Time) error {
+			if time.Since(t) > 10*time.Second {
+				//only check connection if more than 10 second of inactivity
+				_, err := c.Do("PING")
+				return err
+			}
+
+			return nil
+		},
+		MaxActive:   10,
+		IdleTimeout: 1 * time.Minute,
+		Wait:        true,
+	}, nil
 }
 
 func (b *ZdbBackend) Close() {
-	b.Server.Close()
+	if b.pool != nil {
+		if err := b.pool.Close(); err != nil {
+			log.Printf("error while closing redis connection pool: %v", err)
+		}
+	}
 }
 
 func Cleanup(backend *ZdbBackend) {
@@ -301,22 +363,22 @@ func Cleanup(backend *ZdbBackend) {
 }
 
 var addrflag = flag.String("addr", ":16379", "listening address")
-var backendflag = flag.String("backend", "127.0.0.1:9900", "zdb backend host/port")
+var backendflag = flag.String("backend", "tcp://127.0.0.1:9900", "zdb backend host/port")
 
 func main() {
 	flag.Parse()
 	cryptoInit()
 
-	backend := NewBackend(*backendflag)
+	backend, err := NewBackend(*backendflag)
+	if err != nil {
+		log.Fatalf("failed to create connection pool to backend %v: %v", *backendflag, err)
+	}
+	defer Cleanup(backend)
+
 	ss := NewSessions(backend)
 
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, syscall.SIGINT)
-
-	defer func() {
-		Cleanup(backend)
-		os.Exit(0)
-	}()
 
 	r := resp.NewServer()
 	r.AcceptFunc(ss.SessionAccept)
@@ -327,13 +389,12 @@ func main() {
 	r.HandleFunc("select", ss.Select)
 
 	go func() {
-		<-c
-		Cleanup(backend)
-		os.Exit(0)
+		log.Printf("Server listenting on %v\n", *addrflag)
+		if err := r.ListenAndServe(*addrflag); err != nil {
+			log.Fatal(err)
+		}
 	}()
 
-	log.Printf("Server listenting on %v\n", *addrflag)
-	if err := r.ListenAndServe(*addrflag); err != nil {
-		log.Fatal(err)
-	}
+	<-c
+	os.Exit(0)
 }

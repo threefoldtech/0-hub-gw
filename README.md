@@ -1,4 +1,4 @@
-# Zero-DB Gateway (using Its You Online authentication)
+# Zero-DB Gateway (using Its You Online authentication) [![Actions Status](https://github.com/threefoldtech/zos/workflows/build/badge.svg)](https://github.com/threefoldtech/0-hub-wg/actions)
 Allows to protect backend Zero-DB for Hub uploads with protection.
 
 # Summary
@@ -28,4 +28,3 @@ Wrapper used to avoid command error, this does nothing
 
 # Repository Owner
 - [Maxime Daniel](https://github.com/maxux), Telegram: [@maxux](http://t.me/maxux)
-
