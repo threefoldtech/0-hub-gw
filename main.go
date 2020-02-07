@@ -295,9 +295,9 @@ func (s *Session) Set(conn *resp.Conn, args []resp.Value) bool {
 
 // NewBackend creates a backend object, which is a
 // connection to 0-db
-func NewBackend(server string) (*ZdbBackend, error) {
+func NewBackend(server string, password string) (*ZdbBackend, error) {
 
-	pool, err := newRedisPool(server)
+	pool, err := newRedisPool(server, password)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to %s", server)
 	}
@@ -307,7 +307,7 @@ func NewBackend(server string) (*ZdbBackend, error) {
 	}, nil
 }
 
-func newRedisPool(address string) (*redis.Pool, error) {
+func newRedisPool(address string, password string) (*redis.Pool, error) {
 	u, err := url.Parse(address)
 	if err != nil {
 		return nil, err
@@ -332,7 +332,19 @@ func newRedisPool(address string) (*redis.Pool, error) {
 
 	return &redis.Pool{
 		Dial: func() (redis.Conn, error) {
-			return redis.Dial(u.Scheme, host, opts...)
+			conn, err := redis.Dial(u.Scheme, host, opts...)
+			if err != nil {
+				return nil, fmt.Errorf("failed to dial 0-db: %v", err)
+			}
+
+			if password != "" {
+				_, err = conn.Do("SELECT", "default", password)
+				if err != nil {
+					return nil, fmt.Errorf("failed to authenticate: %v", err)
+				}
+			}
+
+			return conn, err
 		},
 		TestOnBorrow: func(c redis.Conn, t time.Time) error {
 			if time.Since(t) > 10*time.Second {
@@ -364,12 +376,13 @@ func Cleanup(backend *ZdbBackend) {
 
 var addrflag = flag.String("addr", ":16379", "listening address")
 var backendflag = flag.String("backend", "tcp://127.0.0.1:9900", "zdb backend host/port")
+var backendpwd = flag.String("password", "", "zdb protected password")
 
 func main() {
 	flag.Parse()
 	cryptoInit()
 
-	backend, err := NewBackend(*backendflag)
+	backend, err := NewBackend(*backendflag, *backendpwd)
 	if err != nil {
 		log.Fatalf("failed to create connection pool to backend %v: %v", *backendflag, err)
 	}
