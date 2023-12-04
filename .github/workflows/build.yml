@@ -13,8 +13,20 @@ jobs:
         go-version: 1.13
       id: go
 
-    - name: Check out code into the Go module directory
+    - name: Checkout code repository
       uses: actions/checkout@v1
+    
+    - name: Download dependencies
+      run: go get -v || true
+    
+    - name: Hotfix dependencies
+      run:  |
+        go env > /tmp/goenv
+        source /tmp/goenv
+
+        file="$GOPATH/pkg/mod/github.com/codahale/blake2@v0.0.0-20150924215134-8d10d0420cbf/blake2.h"
+        sudo sed -i 's/ALIGN( 64 ) typedef struct __blake2s_state/typedef struct ALIGN(64) __blake2s_state/' $file
+        sudo sed -i 's/ALIGN( 64 ) typedef struct __blake2b_state/typedef struct ALIGN(64) __blake2b_state/' $file
 
     - name: Build
       run: go build -v .
