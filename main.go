@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -16,6 +18,7 @@ import (
 
 	"github.com/dgrijalva/jwt-go"
 
+	"github.com/asmcos/requests"
 	"github.com/codahale/blake2"
 	"github.com/gomodule/redigo/redis"
 	"github.com/tidwall/resp"
@@ -38,9 +41,7 @@ type Sessions struct {
 	backend *ZdbBackend
 }
 
-//
 // its you online
-//
 const (
 	iyoPubKey = `-----BEGIN PUBLIC KEY-----
 MHYwEAYHKoZIzj0CAQYFK4EEACIDYgAES5X8XrfKdx9gYayFITc89wad4usrk0n2
@@ -108,6 +109,37 @@ func verifyToken(tokenStr string) (bool, string, error) {
 	return false, "", nil
 }
 
+type HubPayload struct {
+	Username string
+}
+
+type HubCall struct {
+	Message string
+	Status  string
+	Payload HubPayload
+}
+
+func verifyTokenHub(tokenStr string) (bool, string, error) {
+	url := *hubaddr + "/api/flist/me"
+	head := requests.Header{"Authorization": "bearer " + tokenStr}
+
+	resp, err := requests.Get(url, head)
+	if err != nil {
+		return false, "", nil
+	}
+
+	var parsed HubCall
+	json.Unmarshal([]byte(resp.Text()), &parsed)
+
+	if parsed.Status == "error" {
+		log.Printf("%v", parsed.Message)
+		return false, "", nil
+	}
+
+	log.Printf("Threebot token validated: %v", parsed.Payload.Username)
+	return true, parsed.Payload.Username, nil
+}
+
 //
 // AUTH
 //
@@ -129,7 +161,18 @@ func (s *Session) Authenticate(conn *resp.Conn, args []resp.Value) bool {
 		return true
 	}
 
-	valid, username, err := verifyToken(args[1].String())
+	token := args[1].String()
+	valid := false
+	username := ""
+	var err error
+
+	if strings.Contains(token, ".") {
+		valid, username, err = verifyToken(args[1].String())
+
+	} else {
+		valid, username, err = verifyTokenHub(args[1].String())
+	}
+
 	if !valid {
 		log.Printf("Authentication failed: %v\n", err)
 		conn.WriteError(errors.New("Access denied"))
@@ -377,6 +420,7 @@ func Cleanup(backend *ZdbBackend) {
 var addrflag = flag.String("addr", ":16379", "listening address")
 var backendflag = flag.String("backend", "tcp://127.0.0.1:9900", "zdb backend host/port")
 var backendpwd = flag.String("password", "", "zdb protected password")
+var hubaddr = flag.String("hub", "https://hub.grid.tf", "hub baseurl api")
 
 func main() {
 	flag.Parse()
